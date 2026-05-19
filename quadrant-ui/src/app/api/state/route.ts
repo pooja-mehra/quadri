@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { bq, fqn, USER_ID } from "@/lib/bq";
 import { isAuthorized } from "@/lib/google-oauth";
+import { isDemoMode } from "@/lib/demo-mode";
 import type {
   CommittedAction,
   DashboardState,
@@ -40,30 +41,38 @@ export async function GET() {
     // Google AND completed onboarding. Fivetran can keep ingesting
     // upstream and the classifier can keep populating BQ, but the
     // dashboard treats those as invisible until the user is in.
-    const [authorized, onboardingRows] = await Promise.all([
-      isAuthorized().catch(() => false),
-      bq
-        .query({
-          query: `
-            SELECT
-              COALESCE(
-                CAST(JSON_VALUE(settings, '$.onboarding.completed') AS BOOL),
-                FALSE
-              ) AS completed
-            FROM ${fqn("user_settings")}
-            WHERE user_id = @uid
-            LIMIT 1
-          `,
-          params: { uid: USER_ID },
-        })
-        .then(([rows]) => rows)
-        .catch(() => []),
-    ]);
-    const onboardingCompleted = Boolean(
-      onboardingRows[0]?.completed,
-    );
-    if (!authorized || !onboardingCompleted) {
-      return NextResponse.json(EMPTY_PAYLOAD);
+    //
+    // Demo mode bypasses the gate — judges visiting the hosted URL
+    // don't have user OAuth tokens, and the demo_user row already
+    // has onboarding.completed=true in BQ from the live-data setup.
+    // Without this, the demo deployment would return EMPTY_PAYLOAD
+    // for every request and the UI would look like an empty product.
+    if (!isDemoMode()) {
+      const [authorized, onboardingRows] = await Promise.all([
+        isAuthorized().catch(() => false),
+        bq
+          .query({
+            query: `
+              SELECT
+                COALESCE(
+                  CAST(JSON_VALUE(settings, '$.onboarding.completed') AS BOOL),
+                  FALSE
+                ) AS completed
+              FROM ${fqn("user_settings")}
+              WHERE user_id = @uid
+              LIMIT 1
+            `,
+            params: { uid: USER_ID },
+          })
+          .then(([rows]) => rows)
+          .catch(() => []),
+      ]);
+      const onboardingCompleted = Boolean(
+        onboardingRows[0]?.completed,
+      );
+      if (!authorized || !onboardingCompleted) {
+        return NextResponse.json(EMPTY_PAYLOAD);
+      }
     }
 
     // Roll forward yesterday's undone items so the dashboard never
