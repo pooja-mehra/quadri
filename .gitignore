@@ -1,0 +1,97 @@
+# ---------------------------------------------------------------
+# Quadri — top-level .gitignore for the monorepo
+# Covers the Next.js UI (quadrant-ui/) and the Python agent backend
+# (quadrant/). Add path-prefixed entries when something is specific
+# to one side.
+# ---------------------------------------------------------------
+
+# --- OS / editor / IDE ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- Claude Code / agent scratch ---
+.claude/
+.aider*
+CLAUDE.md
+AGENTS.md
+
+# --- Internal design / planning / prompt docs ---
+# Ignore every .md file (at any depth) EXCEPT files literally named
+# README.md. Keeps the public-facing READMEs (root, quadrant-ui/,
+# quadrant/, eval sets) while excluding architecture notes, prompt
+# drafts, decision logs, demo scripts, etc. that were useful during
+# development but aren't part of the submission.
+*.md
+!README.md
+
+# --- Secrets & local config ---
+# Anything that could carry credentials. The hosted deployments
+# (Vercel project env vars, Cloud Run service env vars) read these
+# at runtime; they MUST NOT be checked in.
+.env
+.env.*
+!.env.example
+!*/.env.example
+*.pem
+*credentials*.json
+*service-account*.json
+*sa-key*.json
+*oauth*.json
+quadrant/app/tokens/
+quadrant/tokens.json
+quadrant-ui/.env.local
+
+# --- Node / Next.js (quadrant-ui/) ---
+quadrant-ui/node_modules/
+quadrant-ui/.next/
+quadrant-ui/out/
+quadrant-ui/build/
+quadrant-ui/coverage/
+quadrant-ui/.vercel/
+quadrant-ui/.turbo/
+quadrant-ui/*.tsbuildinfo
+quadrant-ui/next-env.d.ts
+quadrant-ui/.pnp
+quadrant-ui/.pnp.*
+quadrant-ui/.yarn/*
+!quadrant-ui/.yarn/patches
+!quadrant-ui/.yarn/plugins
+!quadrant-ui/.yarn/releases
+!quadrant-ui/.yarn/versions
+quadrant-ui/npm-debug.log*
+quadrant-ui/yarn-debug.log*
+quadrant-ui/yarn-error.log*
+quadrant-ui/.pnpm-debug.log*
+
+# --- Python / FastAPI (quadrant/) ---
+quadrant/.venv/
+quadrant/venv/
+quadrant/__pycache__/
+quadrant/**/__pycache__/
+quadrant/*.egg-info/
+quadrant/build/
+quadrant/dist/
+quadrant/.pytest_cache/
+quadrant/.mypy_cache/
+quadrant/.ruff_cache/
+quadrant/htmlcov/
+quadrant/.coverage
+quadrant/coverage.xml
+quadrant/*.py[cod]
+quadrant/*$py.class
+
+# --- ADK local session state ---
+# ADK sqlite session DB; reset on every backend boot anyway.
+quadrant/sessions.db
+quadrant/app/sessions.db
+session.db
+
+# --- Local development artifacts ---
+*.log
+logs/
+tmp/
+.tmp/
