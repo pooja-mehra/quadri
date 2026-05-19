@@ -762,7 +762,17 @@ export function ItemDetailModal({
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-lg overflow-hidden">
+      <DialogContent
+        className={cn(
+          "overflow-hidden",
+          // Email drafts get a landscape layout so the composer feels
+          // like Gmail — To / Subject / Body / Attachments stacked
+          // vertically in a wide left column, source + schedule +
+          // notes as a sidebar on the right. Signal-only items stay
+          // portrait since there's nothing email-shaped to show.
+          isEmail ? "max-w-4xl" : "max-w-lg",
+        )}
+      >
         <DialogHeader>
           <DialogTitle className="text-base leading-snug">
             {action?.subject ?? signal?.title ?? title}
@@ -778,13 +788,251 @@ export function ItemDetailModal({
           <div className="flex items-center justify-center py-8">
             <Loader2 className="size-5 animate-spin text-foreground/40" />
           </div>
+        ) : isEmail ? (
+          // ─── Email-draft layout: landscape, Gmail-shaped ──────────
+          // Left column = the email composer (To / Subject / Body /
+          // Attachments stacked top→bottom, attachments visually
+          // anchored to the bottom of the body like Gmail).
+          // Right column = the "why" sidebar: source context,
+          // schedule send, notes. Stacks to single column on mobile.
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            {/* Composer — 2/3 width on md+ */}
+            <div className="space-y-3 md:col-span-2">
+              <div className="space-y-1">
+                <label className="text-[10px] font-medium uppercase tracking-wider text-foreground/55">
+                  To
+                </label>
+                <Input
+                  value={toRecipient}
+                  onChange={(e) => setToRecipient(e.target.value)}
+                  disabled={isReadonly || saving}
+                  className="text-xs"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-medium uppercase tracking-wider text-foreground/55">
+                  Subject
+                </label>
+                <Input
+                  value={subject}
+                  onChange={(e) => setSubject(e.target.value)}
+                  disabled={isReadonly || saving}
+                  className="text-xs"
+                />
+              </div>
+              {/* Body + attachments as one visual block, like Gmail's
+                  compose window. Border wraps both so the chips read
+                  as "files attached to this message." */}
+              <div className="overflow-hidden rounded-md border border-input shadow-xs">
+                <textarea
+                  rows={12}
+                  value={body}
+                  onChange={(e) => setBody(e.target.value)}
+                  disabled={isReadonly || saving}
+                  className={cn(
+                    "flex w-full bg-background px-3 py-2 text-xs leading-relaxed",
+                    "focus-visible:outline-none",
+                    "disabled:cursor-not-allowed disabled:opacity-50",
+                    "resize-none border-0",
+                  )}
+                  placeholder="Body…"
+                />
+                {action && attachments.length > 0 ? (
+                  <div className="border-t border-neutral-200 bg-neutral-50/60 px-3 py-2">
+                    <ul className="flex flex-wrap gap-1.5">
+                      {attachments.map((a) => (
+                        <li
+                          key={a.file_id}
+                          className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-neutral-200 bg-white px-2 py-1 text-[11px] shadow-xs"
+                        >
+                          <Paperclip
+                            className="size-3 shrink-0 text-neutral-500"
+                            aria-hidden
+                          />
+                          <span
+                            className="line-clamp-1 max-w-[220px] text-neutral-800"
+                            title={a.name}
+                          >
+                            {a.name}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => void removeAttachment(a.file_id)}
+                            disabled={
+                              attachmentSaving || action.status === "sent"
+                            }
+                            className="ml-1 inline-flex size-4 shrink-0 items-center justify-center rounded text-neutral-500 hover:bg-neutral-200 hover:text-neutral-800 disabled:opacity-40"
+                            title="Remove this attachment"
+                          >
+                            <X className="size-3" aria-hidden />
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            {/* Sidebar — 1/3 width on md+ */}
+            <div className="space-y-3 md:col-span-1">
+              {/* Source(s) */}
+              {allSources.length > 0 ? (
+                <div className="min-w-0 space-y-2 rounded-md border border-neutral-200 bg-neutral-50 p-3">
+                  <div className="text-[10px] font-medium uppercase tracking-wider text-foreground/55">
+                    {allSources.length === 1
+                      ? "Source"
+                      : `Sources (${allSources.length})`}
+                  </div>
+                  {allSources.map((src) => {
+                    const meta = parseMeta(src.metadata_json);
+                    const fromRaw =
+                      typeof meta?.from === "string" ? meta.from : "";
+                    const from = friendlySender(fromRaw);
+                    const driveLink =
+                      typeof meta?.web_view_link === "string"
+                        ? meta.web_view_link
+                        : "";
+                    return (
+                      <div key={src.signal_id} className="min-w-0 space-y-1">
+                        <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-foreground/60">
+                          <span className="rounded bg-white px-1.5 py-0.5 font-medium">
+                            {prettySource(src.source)}
+                          </span>
+                          {from ? (
+                            <span
+                              className="min-w-0 max-w-full truncate"
+                              title={fromRaw}
+                            >
+                              {from}
+                            </span>
+                          ) : null}
+                          {src.quadrant ? (
+                            <span className="rounded bg-white px-1.5 py-0.5 capitalize">
+                              {src.quadrant}
+                            </span>
+                          ) : null}
+                          {driveLink ? (
+                            <a
+                              href={driveLink}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-0.5 text-sky-700 hover:underline"
+                            >
+                              open <ExternalLink className="size-3" aria-hidden />
+                            </a>
+                          ) : null}
+                        </div>
+                        {src.title ? (
+                          <div className="break-words text-sm font-medium leading-snug text-foreground/90">
+                            {src.title}
+                          </div>
+                        ) : null}
+                        {src.excerpt ? (
+                          <p className="whitespace-pre-wrap break-words text-xs leading-snug text-foreground/75">
+                            {src.excerpt}
+                          </p>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+
+              {/* Schedule */}
+              {noteRefId ? (
+                <div className="space-y-1">
+                  <label className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-foreground/55">
+                    <CalendarClock className="size-3" aria-hidden />
+                    Schedule send
+                  </label>
+                  <input
+                    type="datetime-local"
+                    value={dueAt}
+                    onChange={(e) => setDueAt(e.target.value)}
+                    onBlur={() => {
+                      if (dueAt !== savedDueAt) void saveSchedule();
+                    }}
+                    disabled={dueSaving || action?.status === "sent"}
+                    className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-xs shadow-xs focus-visible:border-ring focus-visible:ring-ring/40 focus-visible:ring-[3px] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                  />
+                  <div className="flex items-center justify-between text-[10px] text-foreground/45">
+                    <span>
+                      {dueSaving
+                        ? "Saving…"
+                        : dueAt !== savedDueAt
+                          ? "Unsaved — leave the field or click Save"
+                          : savedDueAt
+                            ? "Saved"
+                            : ""}
+                    </span>
+                    {dueAt !== savedDueAt ? (
+                      <button
+                        type="button"
+                        onClick={() => void saveSchedule()}
+                        disabled={dueSaving}
+                        className="text-sky-700 hover:underline"
+                      >
+                        Save
+                      </button>
+                    ) : savedDueAt ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDueAt("");
+                          void saveSchedule();
+                        }}
+                        className="hover:text-neutral-800 hover:underline"
+                      >
+                        Clear
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+
+              {/* Notes */}
+              {noteRefId ? (
+                <div className="space-y-1">
+                  <label className="text-[10px] font-medium uppercase tracking-wider text-foreground/55">
+                    Your notes
+                  </label>
+                  <textarea
+                    rows={4}
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    onBlur={() => {
+                      void saveNotes();
+                    }}
+                    placeholder="Anything you want to remember…"
+                    disabled={notesSaving}
+                    className={cn(
+                      "flex w-full rounded-md border border-input bg-background px-3 py-2 text-xs shadow-xs leading-relaxed",
+                      "focus-visible:border-ring focus-visible:ring-ring/40 focus-visible:ring-[3px] focus-visible:outline-none",
+                      "disabled:cursor-not-allowed disabled:opacity-50",
+                      "resize-none",
+                    )}
+                  />
+                  <div className="text-[10px] text-foreground/45">
+                    {notesSaving
+                      ? "Saving…"
+                      : notes !== savedNotes
+                        ? "Unsaved — click outside to save"
+                        : "Saved"}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
         ) : (
+          // ─── Non-email layout: portrait single column ─────────────
           <div className="space-y-3">
-            {/* Source(s) — email sender + summary, drive doc title, etc. */}
             {allSources.length > 0 ? (
               <div className="min-w-0 space-y-2 rounded-md border border-neutral-200 bg-neutral-50 p-3">
                 <div className="text-[10px] font-medium uppercase tracking-wider text-foreground/55">
-                  {allSources.length === 1 ? "Source" : `Sources (${allSources.length})`}
+                  {allSources.length === 1
+                    ? "Source"
+                    : `Sources (${allSources.length})`}
                 </div>
                 {allSources.map((src) => {
                   const meta = parseMeta(src.metadata_json);
@@ -838,67 +1086,17 @@ export function ItemDetailModal({
               </div>
             ) : null}
 
-            {/* Attachments — Quadri drafts these via
-                find_drive_attachments; user can × any. Hidden when
-                the action isn't an email draft (text/calendar
-                events don't carry file attachments here). */}
-            {action && action.action_type === "email_draft" && attachments.length > 0 ? (
-              <div className="space-y-1">
-                <label className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-foreground/55">
-                  <Paperclip className="size-3" aria-hidden />
-                  Attachments
-                </label>
-                <ul className="flex flex-wrap gap-1.5">
-                  {attachments.map((a) => (
-                    <li
-                      key={a.file_id}
-                      className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-neutral-200 bg-neutral-50 px-2 py-1 text-[11px]"
-                    >
-                      <Paperclip
-                        className="size-3 shrink-0 text-neutral-500"
-                        aria-hidden
-                      />
-                      <span
-                        className="line-clamp-1 max-w-[200px] text-neutral-800"
-                        title={a.name}
-                      >
-                        {a.name}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => void removeAttachment(a.file_id)}
-                        disabled={attachmentSaving || action.status === "sent"}
-                        className="ml-1 inline-flex size-4 shrink-0 items-center justify-center rounded text-neutral-500 hover:bg-neutral-200 hover:text-neutral-800 disabled:opacity-40"
-                        title="Remove this attachment"
-                      >
-                        <X className="size-3" aria-hidden />
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-
-            {/* Schedule — saved to item_notes.due_at. For email
-                drafts, ALSO fires schedule_send via chat. */}
             {noteRefId ? (
               <div className="space-y-1">
                 <label className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-foreground/55">
                   <CalendarClock className="size-3" aria-hidden />
-                  {action?.action_type === "email_draft"
-                    ? "Schedule send"
-                    : "Schedule / due"}
+                  Schedule / due
                 </label>
                 <div className="flex items-center gap-2">
                   <input
                     type="datetime-local"
                     value={dueAt}
                     onChange={(e) => setDueAt(e.target.value)}
-                    // Auto-save when the user finishes picking. Same
-                    // pattern as the notes textarea so users don't
-                    // need to remember to click anything — the
-                    // explicit Save still appears if you want
-                    // confirmation, but blur is the primary path.
                     onBlur={() => {
                       if (dueAt !== savedDueAt) void saveSchedule();
                     }}
@@ -943,9 +1141,6 @@ export function ItemDetailModal({
               </div>
             ) : null}
 
-            {/* Notes — user-authored, saved to item_notes. Always
-                editable, persists across opens. Replaces the prior
-                "no source details" placeholder. */}
             {noteRefId ? (
               <div className="space-y-1">
                 <label className="text-[10px] font-medium uppercase tracking-wider text-foreground/55">
@@ -977,23 +1172,8 @@ export function ItemDetailModal({
               </div>
             ) : null}
 
-            {/* Editable draft (action-backed items only). For signal-only
-                bullets there's nothing draft-shaped to edit. */}
-            {action ? (
+            {action && !isEmail ? (
               <div className="space-y-2">
-                {isEmail ? (
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-medium uppercase tracking-wider text-foreground/55">
-                      To
-                    </label>
-                    <Input
-                      value={toRecipient}
-                      onChange={(e) => setToRecipient(e.target.value)}
-                      disabled={isReadonly || saving}
-                      className="text-xs"
-                    />
-                  </div>
-                ) : null}
                 <div className="space-y-1">
                   <label className="text-[10px] font-medium uppercase tracking-wider text-foreground/55">
                     Subject
@@ -1005,13 +1185,13 @@ export function ItemDetailModal({
                     className="text-xs"
                   />
                 </div>
-                {(isEmail || action.body) ? (
+                {action.body ? (
                   <div className="space-y-1">
                     <label className="text-[10px] font-medium uppercase tracking-wider text-foreground/55">
-                      {isEmail ? "Body" : "Description"}
+                      Description
                     </label>
                     <textarea
-                      rows={isEmail ? 6 : 3}
+                      rows={3}
                       value={body}
                       onChange={(e) => setBody(e.target.value)}
                       disabled={isReadonly || saving}
