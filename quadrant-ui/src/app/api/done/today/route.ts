@@ -41,24 +41,26 @@ export async function GET() {
           GROUP BY item_ref_id
         ),
         today_sent AS (
+          -- LEFT JOIN UNNEST + JOIN signals so we decorrelate the
+          -- subquery (BQ refuses correlated subqueries against
+          -- another table). ANY_VALUE collapses the resulting rows
+          -- back to one per action_id; if no signals match, source
+          -- comes out NULL and we fall back to 'user' at the final
+          -- SELECT.
           SELECT
-            action_id AS ref_id,
-            ANY_VALUE(subject) AS action_subject,
-            MAX(sent_at) AS action_sent_at,
-            -- Source = source of the first related signal where set,
-            -- else 'user' so we always have a label.
-            ANY_VALUE((
-              SELECT s.source FROM UNNEST(p.related_signal_ids) sid
-              JOIN ${fqn("quadrant_signals")} s
-                ON s.signal_id = sid AND s.user_id = @uid
-              LIMIT 1
-            )) AS action_source
+            p.action_id AS ref_id,
+            ANY_VALUE(p.subject) AS action_subject,
+            MAX(p.sent_at) AS action_sent_at,
+            ANY_VALUE(s.source) AS action_source
           FROM ${fqn("proposed_actions")} p
+          LEFT JOIN UNNEST(p.related_signal_ids) AS sid
+          LEFT JOIN ${fqn("quadrant_signals")} s
+            ON s.signal_id = sid AND s.user_id = @uid
           WHERE p.user_id = @uid
             AND p.status = 'sent'
             AND DATE(p.sent_at, 'America/Los_Angeles')
               = CURRENT_DATE('America/Los_Angeles')
-          GROUP BY action_id
+          GROUP BY p.action_id
         ),
         combined AS (
           SELECT ref_id, slot_text AS title_hint, NULL AS subject,
@@ -79,16 +81,15 @@ export async function GET() {
           -- Pull subjects + signal-sourced source for refs that are
           -- action_ids (the today_sent CTE already has subjects but
           -- slot rows might carry action_ids whose source we want).
+          -- Same decorrelation as today_sent above.
           SELECT
             p.action_id AS ref_id,
             ANY_VALUE(p.subject) AS subject,
-            ANY_VALUE((
-              SELECT s.source FROM UNNEST(p.related_signal_ids) sid
-              JOIN ${fqn("quadrant_signals")} s
-                ON s.signal_id = sid AND s.user_id = @uid
-              LIMIT 1
-            )) AS source
+            ANY_VALUE(s.source) AS source
           FROM ${fqn("proposed_actions")} p
+          LEFT JOIN UNNEST(p.related_signal_ids) AS sid
+          LEFT JOIN ${fqn("quadrant_signals")} s
+            ON s.signal_id = sid AND s.user_id = @uid
           WHERE p.user_id = @uid
           GROUP BY p.action_id
         )
