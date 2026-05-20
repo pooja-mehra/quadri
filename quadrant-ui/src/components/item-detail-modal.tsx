@@ -535,6 +535,112 @@ export function ItemDetailModal({
     }
   }
 
+  // Append a status line to the user's notes (with today's date
+  // in PT) and persist. Used by "I signed it" + the tracker-Done
+  // follow-up so the notes field doubles as an audit trail —
+  // when the daily CSV exports, those lines explain *what*
+  // happened, not just *when*.
+  async function appendStatusToNotes(line: string): Promise<void> {
+    if (!noteRefId) return;
+    const today = new Date().toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+    const newLine = `${line} — ${today}.`;
+    // Avoid duplicating identical lines on re-clicks.
+    if ((notes || "").includes(newLine)) return;
+    const next = notes ? `${notes.trimEnd()}\n${newLine}` : newLine;
+    setNotes(next);
+    // Persist directly — don't wait for blur because the user is
+    // about to close the modal.
+    try {
+      await fetch("/api/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ref_id: noteRefId, notes: next }),
+      });
+      setSavedNotes(next);
+    } catch {
+      // Non-fatal — the slot done + chat draft are the primary
+      // effects; missing notes append is a soft loss.
+    }
+  }
+
+  // "I signed it" — dedicated handler for signable Drive docs (a
+  // signal with a counterparty_email in its metadata). Marks the
+  // slot done AND asks Quadri to draft the send-back email with
+  // the doc attached, via the agent's `draft_signed_doc_email`
+  // tool. Distinct from Done so the universal "I'm done with this
+  // task" semantic stays clean.
+  const [signing, setSigning] = useState(false);
+  async function markSignedAndDraft() {
+    if (signing || !signal || !signalId || !planDate) return;
+    setSigning(true);
+    try {
+      // 0. Audit-trail note so the daily CSV captures *what* the
+      //    user did, not just that they touched the item.
+      await appendStatusToNotes("Reviewed and signed");
+
+      // 1. Mark the slot done so the signal drops out of the queue.
+      await fetch("/api/slots/done", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          plan_date: planDate,
+          item_ref_id: signalId,
+          item_kind: "user",
+          item_text: signal.title ?? title,
+        }),
+      }).catch(() => undefined);
+
+      // 2. Fire the chat call so Quadri runs draft_signed_doc_email.
+      // Distinctive keywords from the signal title — drops short /
+      // throwaway words so the keyword search lands on the right
+      // PDF.
+      const kws = (signal.title || "")
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter(
+          (w) =>
+            w.length > 3 &&
+            !["sign", "review", "and", "the"].includes(w),
+        )
+        .slice(0, 4);
+      const sessionId =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? "signed-" + crypto.randomUUID()
+          : "signed-" + Date.now();
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("quadri:drafting-start"));
+      }
+      const chatResp = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message:
+            `I just signed: ${signal.title || "the document"}. ` +
+            `Use draft_signed_doc_email with keywords ${JSON.stringify(kws)}.`,
+          sessionId,
+        }),
+      }).catch(() => null);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("quadri:drafting-end"));
+      }
+      if (chatResp && chatResp.ok) {
+        toast.success("Marked signed — send-back email drafted. Open it to review.");
+      } else {
+        toast.info(
+          "Marked signed. Open Quadri chat and say 'I signed it' to draft the send-back.",
+        );
+      }
+      onChanged?.();
+      onClose();
+    } finally {
+      setSigning(false);
+    }
+  }
+
   // Ask Quadri to draft an email reply for this signal-only item.
   // The agent's draft_email tool inserts a row into proposed_actions
   // (status='drafted') linked to the source signal. After the chat
@@ -693,6 +799,16 @@ export function ItemDetailModal({
       } else if (action) {
         ok = await markSent(action.action_id);
       } else if (signalId && planDate) {
+        // For tracker rows, Done implies "this is fixed" since the
+        // project-tracker domain has no other state to express. We
+        // append a status line to notes BEFORE marking the slot
+        // done, so the CSV log captures the verb. Then after the
+        // slot write succeeds, fire a chat call so Quadri scans
+        // for who's waiting on this row and drafts a follow-up.
+        if (isTrackerRow) {
+          await appendStatusToNotes("Fixed");
+        }
+
         const r = await fetch("/api/slots/done", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -707,6 +823,48 @@ export function ItemDetailModal({
         if (!ok) {
           const data = await r.json().catch(() => ({}));
           toast.error(data.error ?? "Couldn't mark done");
+        }
+
+        if (ok && isTrackerRow && signal) {
+          // Ask Quadri to look at this specific tracker row and
+          // draft a follow-up email if anyone is waiting on it.
+          // The agent already has scan_drive_sheet_followups, which
+          // handles the keyword extraction + cross-sheet email
+          // lookup; we just nudge it to run for this row.
+          const sessionId =
+            typeof crypto !== "undefined" && "randomUUID" in crypto
+              ? "fixed-" + crypto.randomUUID()
+              : "fixed-" + Date.now();
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("quadri:drafting-start"));
+          }
+          void fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              message:
+                `I just marked '${signal.title || "this task"}' as fixed in ` +
+                `the project tracker. Check that row's notes — if anyone is ` +
+                `waiting on it (their first name will be in the notes), draft ` +
+                `a short follow-up email letting them know it's resolved. ` +
+                `Use scan_drive_sheet_followups (it already knows how to ` +
+                `look up emails by name).`,
+              sessionId,
+            }),
+          })
+            .then(() => {
+              toast.success(
+                "Marked fixed — Quadri is checking who to email.",
+              );
+            })
+            .catch(() => {
+              // Best-effort; slot is done either way.
+            })
+            .finally(() => {
+              if (typeof window !== "undefined") {
+                window.dispatchEvent(new CustomEvent("quadri:drafting-end"));
+              }
+            });
         }
       } else {
         toast.error("Can't mark done — missing context");
@@ -732,6 +890,35 @@ export function ItemDetailModal({
     !marking &&
     ((action && action.status !== "sent") ||
       (!action && !!signalId && !!planDate));
+
+  // Per-item flags. Done stays generic, but two item shapes get
+  // *extra* behavior triggered:
+  //
+  //   - signable doc  → separate "I signed it" button alongside
+  //     Done. Two states matter (reviewed vs. signed), so they need
+  //     two buttons.
+  //
+  //   - tracker row   → Done by itself implies "this is fixed"
+  //     (there's no other state for a project-tracker line), so
+  //     we let Done piggyback an "ask Quadri to draft a follow-up
+  //     if someone is waiting." Only fires when Quadri can find
+  //     a recipient; otherwise it's a silent no-op for the user.
+  const signalMeta = signal ? parseMeta(signal.metadata_json) : null;
+  const counterpartyEmail =
+    typeof signalMeta?.counterparty_email === "string"
+      ? signalMeta.counterparty_email
+      : null;
+  const isSignableDoc =
+    !action &&
+    !!signal &&
+    !!counterpartyEmail &&
+    (signal.source === "google_drive_pdf" ||
+      signal.source === "google_drive_doc");
+  const isTrackerRow =
+    !action &&
+    !!signal &&
+    signal.source === "google_drive_sheet" &&
+    signalMeta?.sheet === "project_tracker";
   // Offer "Draft a reply" when this is a signal-only item AND the
   // source signal is an email. Hides for drive docs / calendar
   // events / non-email sources where a reply doesn't make sense.
@@ -1271,11 +1458,9 @@ export function ItemDetailModal({
           ) : null}
           {canMarkDone ? (
             (() => {
-              // Single button label per item type. Schedule context
-              // is already visible above (the "Schedule send" input
-              // and saved-time line); duplicating it in the button
-              // copy just clutters. Toast tells the user what
-              // actually happened on click.
+              // Done is universal — "I'm done with this task." The
+              // signable-doc flow gets its own dedicated button
+              // (rendered next to Done) so the semantics stay clean.
               const isEmail =
                 action && action.action_type === "email_draft" && !isReadonly;
               const label = isEmail ? "Send" : "Done";
@@ -1291,6 +1476,23 @@ export function ItemDetailModal({
                 </Button>
               );
             })()
+          ) : null}
+          {isSignableDoc ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void markSignedAndDraft()}
+              disabled={signing}
+              className="border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+              title={`Mark this signed and have Quadri draft a send-back to ${counterpartyEmail}`}
+            >
+              {signing ? (
+                <Loader2 className="mr-1 size-3.5 animate-spin" aria-hidden />
+              ) : (
+                <Sparkles className="mr-1 size-3.5" aria-hidden />
+              )}
+              {signing ? "Drafting…" : "I signed it"}
+            </Button>
           ) : null}
         </div>
       </DialogContent>
