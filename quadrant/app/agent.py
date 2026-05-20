@@ -2960,6 +2960,213 @@ def enrich_email_drafts_with_attachments() -> str:
     )
 
 
+def draft_signed_doc_email(keywords: list[str]) -> str:
+    """The user says they just signed / reviewed a document and wants
+    to send it on. Build the send-back email with the doc attached.
+
+    Use whenever the user says something like:
+      • "I signed the contractor agreement"
+      • "Just signed the NDA, send it"
+      • "I reviewed and signed it"
+      • "Contract is signed"
+
+    The tool does three things programmatically (so the LLM doesn't
+    have to chain three calls and get it right):
+
+      1. Searches drive_documents_raw for the matching doc using the
+         user's keywords (e.g. ["contractor", "agreement"]). Most
+         specific name match wins.
+      2. Reads the doc's body_text for a counterparty email
+         (regex on `\\S+@\\S+\\.\\S+`) and a counterparty name (the
+         words just before the email in the body). Falls back to
+         using participants on the linked quadrant_signal if the
+         body parse misses.
+      3. Drafts an email to that counterparty announcing the signed
+         doc, with the doc itself attached via metadata.attachments.
+         Idempotent via _find_existing_draft_for_signals.
+
+    Args:
+        keywords: 2-6 distinctive terms drawn from the user's
+                  message (e.g. ["contractor", "agreement"] for
+                  "the contractor agreement", ["nda"] for "the NDA").
+
+    Returns a short confirmation the agent can read back verbatim,
+    e.g. "Drafted send-back to alex@partnerco.com with the
+    contractor agreement attached. Open to review and Send."
+    """
+    cleaned = [k.strip().lower() for k in (keywords or []) if k and k.strip()]
+    if not cleaned:
+        return "I need a keyword or two (e.g. 'contractor agreement', 'NDA') to know which signed doc to send."
+
+    # 1. Find the doc via the existing keyword-LIKE search.
+    try:
+        matches_raw = find_drive_attachments(cleaned, limit=3)
+        matches = json.loads(matches_raw).get("matches", [])
+    except Exception as e:
+        return f"ERROR: drive lookup failed: {e}"
+    if not matches:
+        return (
+            f"Couldn't find a Drive doc matching {cleaned!r}. "
+            "Tell me the doc's name or rename it in Drive."
+        )
+    doc = matches[0]
+    file_id = doc.get("file_id")
+    doc_name = doc.get("name", "the signed document")
+    if not file_id:
+        return "ERROR: matched doc has no file_id."
+
+    # 2. Pull the full body_text so we can extract the counterparty.
+    try:
+        body_rows = list(
+            _bq.query(
+                f"""
+                SELECT body_text FROM quadrant.drive_documents_raw
+                WHERE file_id = @fid LIMIT 1
+                """,
+                job_config=bigquery.QueryJobConfig(
+                    query_parameters=[
+                        bigquery.ScalarQueryParameter("fid", "STRING", file_id)
+                    ]
+                ),
+            ).result(timeout=10)
+        )
+    except Exception:
+        body_rows = []
+    body_text = body_rows[0]["body_text"] if body_rows else ""
+
+    # Email extraction — first one wins. Skips the user's own address
+    # to avoid drafting an email to themselves.
+    own_emails = {"p.mehra86@gmail.com"}
+    counterparty_email: str | None = None
+    counterparty_name: str | None = None
+    for m in re.finditer(r"[\w.+-]+@[\w-]+\.[\w.-]+", body_text or ""):
+        addr = m.group(0).strip().lower()
+        if addr in own_emails:
+            continue
+        counterparty_email = m.group(0)
+        # Capture a likely name from the 3 words before the email
+        # (e.g. "PartnerCo (Alex Chen, alex@partnerco.com)" → "Alex Chen").
+        start = max(0, m.start() - 60)
+        snippet = body_text[start : m.start()]
+        nm = re.search(r"([A-Z][a-z]+ [A-Z][a-z]+)", snippet)
+        if nm:
+            counterparty_name = nm.group(1)
+        break
+
+    # Fallback: check related signals' participants array.
+    if not counterparty_email:
+        try:
+            sig_rows = list(
+                _bq.query(
+                    f"""
+                    SELECT participants
+                    FROM quadrant.quadrant_signals
+                    WHERE user_id = 'demo_user'
+                      AND source_record_id = @fid
+                    LIMIT 1
+                    """,
+                    job_config=bigquery.QueryJobConfig(
+                        query_parameters=[
+                            bigquery.ScalarQueryParameter("fid", "STRING", file_id)
+                        ]
+                    ),
+                ).result(timeout=10)
+            )
+            if sig_rows and sig_rows[0]["participants"]:
+                for p in sig_rows[0]["participants"]:
+                    if p and "@" in p and p.lower() not in own_emails:
+                        counterparty_email = p
+                        break
+        except Exception:
+            pass
+
+    if not counterparty_email:
+        return (
+            f"Found '{doc_name}' but couldn't extract a recipient from the "
+            "document. Tell me who to send it to."
+        )
+
+    # Find the related signal_id so dedup + the focus card cross-link
+    # work. Optional — non-fatal if missing.
+    sig_id: str | None = None
+    try:
+        sid_rows = list(
+            _bq.query(
+                f"""
+                SELECT signal_id
+                FROM quadrant.quadrant_signals
+                WHERE user_id = 'demo_user'
+                  AND source_record_id = @fid
+                LIMIT 1
+                """,
+                job_config=bigquery.QueryJobConfig(
+                    query_parameters=[
+                        bigquery.ScalarQueryParameter("fid", "STRING", file_id)
+                    ]
+                ),
+            ).result(timeout=10)
+        )
+        if sid_rows:
+            sig_id = sid_rows[0]["signal_id"]
+    except Exception:
+        pass
+
+    related_signal_ids = [sig_id] if sig_id else []
+    if related_signal_ids and _find_existing_draft_for_signals(
+        "email_draft", related_signal_ids
+    ):
+        return (
+            f"You already have a send-back draft for '{doc_name}'. "
+            "Open the card to review or edit."
+        )
+
+    # 3. Compose and insert the draft.
+    first_name = (
+        counterparty_name.split()[0] if counterparty_name else "there"
+    )
+    subject = f"{doc_name} — signed"
+    body_lines = [
+        f"Hi {first_name},",
+        "",
+        f"Attached is the signed {doc_name.lower()} from my side.",
+        "",
+        "Let me know if you need anything else to wrap this up.",
+        "",
+        "Thanks",
+    ]
+    body = "\n".join(body_lines)
+
+    payload = {
+        "to_recipient": counterparty_email,
+        "subject": subject,
+        "body": body,
+        "reasoning": (
+            f"User said they signed '{doc_name}'. Drafting send-back to "
+            f"the counterparty extracted from the document."
+        ),
+        "related_signal_ids": related_signal_ids,
+        "metadata": {
+            "attachments": [
+                {
+                    "file_id": file_id,
+                    "name": doc_name,
+                    "mime_type": doc.get("mime_type", "application/pdf"),
+                }
+            ]
+        },
+    }
+    try:
+        action_id = _insert_action("email_draft", payload)
+    except Exception as e:
+        return f"ERROR: failed to save email draft: {e}"
+
+    return (
+        f"Drafted send-back to {counterparty_email} with '{doc_name}' "
+        f"attached. Open the card on your dashboard (or ask me to "
+        f"'send the {doc_name.lower()} email') to review and Send."
+    )
+
+
 # ---------- Workload analysis + rebalance suggestions ----------
 #
 # Quadri's "breathing space" surface. Walks the next 7 days, computes
@@ -4418,6 +4625,23 @@ waiting", etc.:
         • Always call find_drive_attachments for these (pricing,
           policy, proposal docs are almost always relevant).
 
+    Signed-document send-back:
+      When the user says they've signed / reviewed / approved a
+      document — e.g. "I signed the contractor agreement",
+      "just signed the NDA", "I reviewed and signed it" — call
+      `draft_signed_doc_email(keywords)` ONCE with 2-3 distinctive
+      terms from the user's message ("contractor", "agreement",
+      "NDA", etc.). That tool:
+        - finds the matching PDF in Drive
+        - extracts the counterparty's email from the doc body
+        - drafts a send-back email with the doc attached
+        - returns a one-line confirmation
+      Read the confirmation back verbatim. Do NOT also call
+      draft_email or find_drive_attachments separately — the tool
+      already does both. If the tool says it couldn't find a doc
+      or couldn't extract a recipient, ask the user once briefly
+      ("which doc?" / "who should I send it to?").
+
   Quadrant assignment guide:
     - career:        work, manager, clients, recruiters, contractors.
     - relationships: family, friends, partner, social check-ins.
@@ -4981,6 +5205,7 @@ root_agent = Agent(
         save_today_notes_log,
         scan_drive_sheet_followups,
         enrich_email_drafts_with_attachments,
+        draft_signed_doc_email,
     ],
 )
 
