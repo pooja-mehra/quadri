@@ -763,17 +763,17 @@ export function ItemDetailModal({
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent
-        className={cn(
-          "overflow-hidden",
-          // Email drafts get a landscape layout so the composer feels
-          // like Gmail — To / Subject / Body / Attachments stacked
-          // vertically in a wide left column, source + schedule +
-          // notes as a sidebar on the right. Signal-only items stay
-          // portrait since there's nothing email-shaped to show.
-          isEmail ? "max-w-4xl" : "max-w-lg",
-        )}
+        // Always landscape — emails need the width to be readable, and
+        // signal-only items still get a balanced 2-column layout
+        // (actionable controls left, source context right). Mobile
+        // collapses the grid to one column.
+        //
+        // Cap height at 90vh and make the middle scroll so phone /
+        // small-laptop viewports can reach the footer (Close / Send).
+        // Header + footer stay pinned; only the body area scrolls.
+        className="flex max-h-[90vh] max-w-4xl flex-col overflow-hidden"
       >
-        <DialogHeader>
+        <DialogHeader className="shrink-0">
           <DialogTitle className="text-base leading-snug">
             {action?.subject ?? signal?.title ?? title}
           </DialogTitle>
@@ -784,6 +784,10 @@ export function ItemDetailModal({
           ) : null}
         </DialogHeader>
 
+        {/* Scroll viewport — every variant below renders inside this
+            div so the footer stays pinned and the middle scrolls on
+            small viewports. */}
+        <div className="-mr-2 flex-1 overflow-y-auto pr-2">
         {loading ? (
           <div className="flex items-center justify-center py-8">
             <Loader2 className="size-5 animate-spin text-foreground/40" />
@@ -872,11 +876,85 @@ export function ItemDetailModal({
                   </div>
                 ) : null}
               </div>
+
+              {/* Schedule + Notes — below the composer on the left
+                  side so the actionable controls flow under the email
+                  body (where the user's attention already lives). */}
+              {noteRefId ? (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <label className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-foreground/55">
+                      <CalendarClock className="size-3" aria-hidden />
+                      Schedule send
+                    </label>
+                    <input
+                      type="datetime-local"
+                      value={dueAt}
+                      onChange={(e) => setDueAt(e.target.value)}
+                      onBlur={() => {
+                        if (dueAt !== savedDueAt) void saveSchedule();
+                      }}
+                      disabled={dueSaving || action?.status === "sent"}
+                      className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-xs shadow-xs focus-visible:border-ring focus-visible:ring-ring/40 focus-visible:ring-[3px] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                    />
+                    <div className="flex items-center justify-between text-[10px] text-foreground/45">
+                      <span>
+                        {dueSaving
+                          ? "Saving…"
+                          : dueAt !== savedDueAt
+                            ? "Unsaved — leave field to save"
+                            : savedDueAt
+                              ? "Saved"
+                              : ""}
+                      </span>
+                      {savedDueAt && dueAt === savedDueAt ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDueAt("");
+                            void saveSchedule();
+                          }}
+                          className="hover:text-neutral-800 hover:underline"
+                        >
+                          Clear
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-medium uppercase tracking-wider text-foreground/55">
+                      Your notes
+                    </label>
+                    <textarea
+                      rows={3}
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
+                      onBlur={() => {
+                        void saveNotes();
+                      }}
+                      placeholder="Anything you want to remember…"
+                      disabled={notesSaving}
+                      className={cn(
+                        "flex w-full rounded-md border border-input bg-background px-3 py-2 text-xs shadow-xs leading-relaxed",
+                        "focus-visible:border-ring focus-visible:ring-ring/40 focus-visible:ring-[3px] focus-visible:outline-none",
+                        "disabled:cursor-not-allowed disabled:opacity-50",
+                        "resize-none",
+                      )}
+                    />
+                    <div className="text-[10px] text-foreground/45">
+                      {notesSaving
+                        ? "Saving…"
+                        : notes !== savedNotes
+                          ? "Unsaved — click outside to save"
+                          : "Saved"}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
             </div>
 
-            {/* Sidebar — 1/3 width on md+ */}
+            {/* Sidebar — read-only context only. 1/3 width on md+. */}
             <div className="space-y-3 md:col-span-1">
-              {/* Source(s) */}
               {allSources.length > 0 ? (
                 <div className="min-w-0 space-y-2 rounded-md border border-neutral-200 bg-neutral-50 p-3">
                   <div className="text-[10px] font-medium uppercase tracking-wider text-foreground/55">
@@ -938,95 +1016,131 @@ export function ItemDetailModal({
                   })}
                 </div>
               ) : null}
-
-              {/* Schedule */}
-              {noteRefId ? (
-                <div className="space-y-1">
-                  <label className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-foreground/55">
-                    <CalendarClock className="size-3" aria-hidden />
-                    Schedule send
-                  </label>
-                  <input
-                    type="datetime-local"
-                    value={dueAt}
-                    onChange={(e) => setDueAt(e.target.value)}
-                    onBlur={() => {
-                      if (dueAt !== savedDueAt) void saveSchedule();
-                    }}
-                    disabled={dueSaving || action?.status === "sent"}
-                    className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-xs shadow-xs focus-visible:border-ring focus-visible:ring-ring/40 focus-visible:ring-[3px] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
-                  />
-                  <div className="flex items-center justify-between text-[10px] text-foreground/45">
-                    <span>
-                      {dueSaving
-                        ? "Saving…"
-                        : dueAt !== savedDueAt
-                          ? "Unsaved — leave the field or click Save"
-                          : savedDueAt
-                            ? "Saved"
-                            : ""}
-                    </span>
-                    {dueAt !== savedDueAt ? (
-                      <button
-                        type="button"
-                        onClick={() => void saveSchedule()}
-                        disabled={dueSaving}
-                        className="text-sky-700 hover:underline"
-                      >
-                        Save
-                      </button>
-                    ) : savedDueAt ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setDueAt("");
-                          void saveSchedule();
-                        }}
-                        className="hover:text-neutral-800 hover:underline"
-                      >
-                        Clear
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              ) : null}
-
-              {/* Notes */}
-              {noteRefId ? (
-                <div className="space-y-1">
-                  <label className="text-[10px] font-medium uppercase tracking-wider text-foreground/55">
-                    Your notes
-                  </label>
-                  <textarea
-                    rows={4}
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    onBlur={() => {
-                      void saveNotes();
-                    }}
-                    placeholder="Anything you want to remember…"
-                    disabled={notesSaving}
-                    className={cn(
-                      "flex w-full rounded-md border border-input bg-background px-3 py-2 text-xs shadow-xs leading-relaxed",
-                      "focus-visible:border-ring focus-visible:ring-ring/40 focus-visible:ring-[3px] focus-visible:outline-none",
-                      "disabled:cursor-not-allowed disabled:opacity-50",
-                      "resize-none",
-                    )}
-                  />
-                  <div className="text-[10px] text-foreground/45">
-                    {notesSaving
-                      ? "Saving…"
-                      : notes !== savedNotes
-                        ? "Unsaved — click outside to save"
-                        : "Saved"}
-                  </div>
-                </div>
-              ) : null}
             </div>
           </div>
         ) : (
-          // ─── Non-email layout: portrait single column ─────────────
-          <div className="space-y-3">
+          // ─── Non-email layout: same landscape grid as email, just
+          // with schedule + notes (+ optional action subject/desc) on
+          // the left and source on the right. Keeps modal shape
+          // consistent across item types. ──────────────────────────
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            {/* Left — actionable controls. 2/3 width on md+. */}
+            <div className="space-y-3 md:col-span-2">
+              {noteRefId ? (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <label className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-foreground/55">
+                      <CalendarClock className="size-3" aria-hidden />
+                      Schedule / due
+                    </label>
+                    <input
+                      type="datetime-local"
+                      value={dueAt}
+                      onChange={(e) => setDueAt(e.target.value)}
+                      onBlur={() => {
+                        if (dueAt !== savedDueAt) void saveSchedule();
+                      }}
+                      disabled={dueSaving || action?.status === "sent"}
+                      className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-xs shadow-xs focus-visible:border-ring focus-visible:ring-ring/40 focus-visible:ring-[3px] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                    />
+                    <div className="flex items-center justify-between text-[10px] text-foreground/45">
+                      <span>
+                        {dueSaving
+                          ? "Saving…"
+                          : dueAt !== savedDueAt
+                            ? "Unsaved — leave field to save"
+                            : savedDueAt
+                              ? "Saved"
+                              : ""}
+                      </span>
+                      {savedDueAt && dueAt === savedDueAt ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDueAt("");
+                            void saveSchedule();
+                          }}
+                          className="hover:text-neutral-800 hover:underline"
+                        >
+                          Clear
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-medium uppercase tracking-wider text-foreground/55">
+                      Your notes
+                    </label>
+                    <textarea
+                      rows={3}
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
+                      onBlur={() => {
+                        void saveNotes();
+                      }}
+                      placeholder="Anything you want to remember…"
+                      disabled={notesSaving}
+                      className={cn(
+                        "flex w-full rounded-md border border-input bg-background px-3 py-2 text-xs shadow-xs leading-relaxed",
+                        "focus-visible:border-ring focus-visible:ring-ring/40 focus-visible:ring-[3px] focus-visible:outline-none",
+                        "disabled:cursor-not-allowed disabled:opacity-50",
+                        "resize-none",
+                      )}
+                    />
+                    <div className="text-[10px] text-foreground/45">
+                      {notesSaving
+                        ? "Saving…"
+                        : notes !== savedNotes
+                          ? "Unsaved — click outside to save"
+                          : "Saved"}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {action && !isEmail ? (
+                <div className="space-y-2">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-medium uppercase tracking-wider text-foreground/55">
+                      Subject
+                    </label>
+                    <Input
+                      value={subject}
+                      onChange={(e) => setSubject(e.target.value)}
+                      disabled={isReadonly || saving}
+                      className="text-xs"
+                    />
+                  </div>
+                  {action.body ? (
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-medium uppercase tracking-wider text-foreground/55">
+                        Description
+                      </label>
+                      <textarea
+                        rows={3}
+                        value={body}
+                        onChange={(e) => setBody(e.target.value)}
+                        disabled={isReadonly || saving}
+                        className={cn(
+                          "flex w-full rounded-md border border-input bg-background px-3 py-2 text-xs shadow-xs leading-relaxed",
+                          "focus-visible:border-ring focus-visible:ring-ring/40 focus-visible:ring-[3px] focus-visible:outline-none",
+                          "disabled:cursor-not-allowed disabled:opacity-50",
+                          "resize-none",
+                        )}
+                      />
+                    </div>
+                  ) : null}
+                  {isCalEvent ? (
+                    <div className="text-[11px] text-foreground/55">
+                      This is a scheduled time block — pin it to today to see it on the bar.
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+
+            {/* Right — read-only source. 1/3 width on md+. */}
+            <div className="space-y-3 md:col-span-1">
             {allSources.length > 0 ? (
               <div className="min-w-0 space-y-2 rounded-md border border-neutral-200 bg-neutral-50 p-3">
                 <div className="text-[10px] font-medium uppercase tracking-wider text-foreground/55">
@@ -1085,136 +1199,12 @@ export function ItemDetailModal({
                 })}
               </div>
             ) : null}
-
-            {noteRefId ? (
-              <div className="space-y-1">
-                <label className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-foreground/55">
-                  <CalendarClock className="size-3" aria-hidden />
-                  Schedule / due
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="datetime-local"
-                    value={dueAt}
-                    onChange={(e) => setDueAt(e.target.value)}
-                    onBlur={() => {
-                      if (dueAt !== savedDueAt) void saveSchedule();
-                    }}
-                    disabled={dueSaving || action?.status === "sent"}
-                    className="flex-1 rounded-md border border-input bg-background px-3 py-1.5 text-xs shadow-xs focus-visible:border-ring focus-visible:ring-ring/40 focus-visible:ring-[3px] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
-                  />
-                  {dueAt !== savedDueAt ? (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => void saveSchedule()}
-                      disabled={dueSaving}
-                      className="border-sky-300 text-sky-700 hover:bg-sky-50"
-                    >
-                      {dueSaving ? (
-                        <Loader2 className="mr-1 size-3.5 animate-spin" aria-hidden />
-                      ) : null}
-                      Save
-                    </Button>
-                  ) : savedDueAt ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDueAt("");
-                        void saveSchedule();
-                      }}
-                      className="text-[11px] text-neutral-500 underline-offset-2 hover:text-neutral-800 hover:underline"
-                    >
-                      Clear
-                    </button>
-                  ) : null}
-                </div>
-                <div className="text-[10px] text-foreground/45">
-                  {dueSaving
-                    ? "Saving schedule…"
-                    : dueAt !== savedDueAt
-                      ? "Unsaved — leave the field or click Save"
-                      : savedDueAt
-                        ? "Saved"
-                        : ""}
-                </div>
-              </div>
-            ) : null}
-
-            {noteRefId ? (
-              <div className="space-y-1">
-                <label className="text-[10px] font-medium uppercase tracking-wider text-foreground/55">
-                  Your notes
-                </label>
-                <textarea
-                  rows={3}
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  onBlur={() => {
-                    void saveNotes();
-                  }}
-                  placeholder="Anything you want to remember about this — context, decisions, what to do next…"
-                  disabled={notesSaving}
-                  className={cn(
-                    "flex w-full rounded-md border border-input bg-background px-3 py-2 text-xs shadow-xs leading-relaxed",
-                    "focus-visible:border-ring focus-visible:ring-ring/40 focus-visible:ring-[3px] focus-visible:outline-none",
-                    "disabled:cursor-not-allowed disabled:opacity-50",
-                    "resize-none",
-                  )}
-                />
-                <div className="text-[10px] text-foreground/45">
-                  {notesSaving
-                    ? "Saving…"
-                    : notes !== savedNotes
-                      ? "Unsaved — click outside to save"
-                      : "Saved"}
-                </div>
-              </div>
-            ) : null}
-
-            {action && !isEmail ? (
-              <div className="space-y-2">
-                <div className="space-y-1">
-                  <label className="text-[10px] font-medium uppercase tracking-wider text-foreground/55">
-                    Subject
-                  </label>
-                  <Input
-                    value={subject}
-                    onChange={(e) => setSubject(e.target.value)}
-                    disabled={isReadonly || saving}
-                    className="text-xs"
-                  />
-                </div>
-                {action.body ? (
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-medium uppercase tracking-wider text-foreground/55">
-                      Description
-                    </label>
-                    <textarea
-                      rows={3}
-                      value={body}
-                      onChange={(e) => setBody(e.target.value)}
-                      disabled={isReadonly || saving}
-                      className={cn(
-                        "flex w-full rounded-md border border-input bg-background px-3 py-2 text-xs shadow-xs leading-relaxed",
-                        "focus-visible:border-ring focus-visible:ring-ring/40 focus-visible:ring-[3px] focus-visible:outline-none",
-                        "disabled:cursor-not-allowed disabled:opacity-50",
-                        "resize-none",
-                      )}
-                    />
-                  </div>
-                ) : null}
-                {isCalEvent ? (
-                  <div className="text-[11px] text-foreground/55">
-                    This is a scheduled time block — pin it to today to see it on the bar.
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
+            </div>
           </div>
         )}
+        </div>{/* /scroll viewport */}
 
-        <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
+        <div className="mt-2 flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-neutral-100 pt-3">
           <Button variant="ghost" size="sm" onClick={onClose}>
             Close
           </Button>
