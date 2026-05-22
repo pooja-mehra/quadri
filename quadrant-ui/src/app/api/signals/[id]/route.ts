@@ -78,6 +78,15 @@ export async function DELETE(
 // Fetch a single signal for the quadrant-card detail modal. Returns
 // the metadata as a JSON-stringified blob (mirrors /api/actions/[id]
 // shape) so the client can parse out sender, body, drive URL, etc.
+//
+// Also includes `linked_action_id` — the action_id of the most-recent
+// drafted/approved proposed_actions row referencing this signal. Used
+// by the modal to auto-route to the draft view when the user reopens
+// a signal that already has a send-back drafted (e.g. after clicking
+// "I signed it" on a Drive doc, draft_signed_doc_email creates an
+// action linked to the doc signal — without this field, reopening
+// the chip lands on the read-only signal view and the user can't
+// find the draft).
 export async function GET(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -99,7 +108,21 @@ export async function GET(
     if (rows.length === 0) {
       return NextResponse.json({ error: "not found" }, { status: 404 });
     }
-    return NextResponse.json(rows[0]);
+    const [linkedRows] = await bq.query({
+      query: `
+        SELECT action_id
+        FROM ${fqn("proposed_actions")}
+        WHERE user_id = @uid
+          AND status IN ('drafted', 'approved')
+          AND @id IN UNNEST(related_signal_ids)
+        ORDER BY drafted_at DESC
+        LIMIT 1
+      `,
+      params: { id, uid: USER_ID },
+    });
+    const linkedActionId =
+      (linkedRows as Array<{ action_id: string }>)[0]?.action_id ?? null;
+    return NextResponse.json({ ...rows[0], linked_action_id: linkedActionId });
   } catch (e) {
     return NextResponse.json(
       { error: e instanceof Error ? e.message : "unknown error" },

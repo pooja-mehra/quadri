@@ -53,6 +53,19 @@ export async function POST(request: Request) {
   const itemText = typeof body.item_text === "string" ? body.item_text : null;
   const slotId = crypto.randomUUID();
 
+  // For ad-hoc "marked done now" items (no prior scheduled slot), place
+  // the chip at the user's current PT time-of-day so it shows up on the
+  // calendar strip instead of getting filtered out at start_min=0.
+  const nowPtParts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date());
+  const hh = Number(nowPtParts.find((p) => p.type === "hour")?.value ?? "0");
+  const mm = Number(nowPtParts.find((p) => p.type === "minute")?.value ?? "0");
+  const nowStartMin = hh * 60 + mm;
+
   try {
     // If a slot already exists for this ref today, flip its done flag
     // instead of inserting a duplicate. UPDATE-then-INSERT pattern.
@@ -95,10 +108,10 @@ export async function POST(request: Request) {
           unscheduled, auto_send_enabled, auto_send_at_iso,
           original_slot_start_min, created_at
         ) VALUES (
-          @slot_id, @uid, DATE('${planDate}'), 0, @kind,
+          @slot_id, @uid, DATE('${planDate}'), @startMin, @kind,
           @ref, @text, 15, NULL, TRUE,
           FALSE, NULL, NULL,
-          0, CURRENT_TIMESTAMP()
+          @startMin, CURRENT_TIMESTAMP()
         )
       `,
       params: {
@@ -107,6 +120,7 @@ export async function POST(request: Request) {
         kind: itemKind,
         ref: itemRefId,
         text: itemText,
+        startMin: nowStartMin,
       },
     });
 

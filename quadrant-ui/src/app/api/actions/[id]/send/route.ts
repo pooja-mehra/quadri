@@ -42,6 +42,90 @@ export async function POST(
       day: "2-digit",
     }).format(new Date());
     void appendNoteToLocalCsv({ refId: id, planDate: todayPT });
+
+    // Surface the send on today's calendar strip:
+    //   - If the action already has a scheduled daily_slots row today,
+    //     flip its done flag (so a scheduled send becomes a done chip
+    //     at its scheduled time slot).
+    //   - Otherwise insert a "done now" slot at the user's current PT
+    //     time-of-day so an ad-hoc send still appears on the strip.
+    void (async () => {
+      try {
+        const [existing] = await bq.query({
+          query: `
+            SELECT slot_id FROM ${fqn("daily_slots")}
+            WHERE user_id = @uid
+              AND plan_date = DATE('${todayPT}')
+              AND item_ref_id = @ref
+            LIMIT 1
+          `,
+          params: { uid: USER_ID, ref: id },
+        });
+        if ((existing as Array<{ slot_id: string }>).length > 0) {
+          const existingSlotId = (existing as Array<{ slot_id: string }>)[0]
+            .slot_id;
+          await bq.query({
+            query: `
+              UPDATE ${fqn("daily_slots")}
+              SET done = TRUE
+              WHERE user_id = @uid AND slot_id = @sid
+            `,
+            params: { uid: USER_ID, sid: existingSlotId },
+          });
+          return;
+        }
+        // Subject for the chip label.
+        const [subjRows] = await bq.query({
+          query: `
+            SELECT subject FROM ${fqn("proposed_actions")}
+            WHERE user_id = @uid AND action_id = @id
+            LIMIT 1
+          `,
+          params: { uid: USER_ID, id },
+        });
+        const subject =
+          (subjRows as Array<{ subject: string | null }>)[0]?.subject ??
+          "(sent draft)";
+        const nowPtParts = new Intl.DateTimeFormat("en-US", {
+          timeZone: "America/Los_Angeles",
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        }).formatToParts(new Date());
+        const hh = Number(
+          nowPtParts.find((p) => p.type === "hour")?.value ?? "0",
+        );
+        const mm = Number(
+          nowPtParts.find((p) => p.type === "minute")?.value ?? "0",
+        );
+        const startMin = hh * 60 + mm;
+        await bq.query({
+          query: `
+            INSERT INTO ${fqn("daily_slots")} (
+              slot_id, user_id, plan_date, slot_start_min, item_kind,
+              item_ref_id, item_text, duration_min, source_event_id, done,
+              unscheduled, auto_send_enabled, auto_send_at_iso,
+              original_slot_start_min, created_at
+            ) VALUES (
+              @slot_id, @uid, DATE('${todayPT}'), @startMin, 'action',
+              @ref, @text, 15, NULL, TRUE,
+              FALSE, NULL, NULL,
+              @startMin, CURRENT_TIMESTAMP()
+            )
+          `,
+          params: {
+            uid: USER_ID,
+            slot_id: crypto.randomUUID(),
+            ref: id,
+            text: subject,
+            startMin,
+          },
+        });
+      } catch (e) {
+        console.error("upsert done slot failed:", e);
+      }
+    })();
+
     return NextResponse.json({ ok: true, action_id: id, status: "sent" });
   } catch (e) {
     return NextResponse.json(

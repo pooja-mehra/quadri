@@ -44,6 +44,18 @@ export async function POST(request: Request) {
     );
   }
 
+  // Google-Calendar-sourced chips on the strip use a synthetic ref
+  // `cal_<event_id>` (no backing daily_slots row — they came IN via
+  // Fivetran, not OUT via Sync). Detect the prefix so we can DELETE
+  // the underlying Google event AND drop the quadrant_signals row,
+  // even though the daily_slots DELETE below will match zero.
+  const CAL_REF_PREFIX = "cal_";
+  const isCalEventRef =
+    itemRefId != null && itemRefId.startsWith(CAL_REF_PREFIX);
+  const calEventId = isCalEventRef
+    ? itemRefId!.slice(CAL_REF_PREFIX.length)
+    : null;
+
   try {
     // 1. Find google_event_ids on the rows we're about to delete so
     //    we can clean Google Calendar in step 2.
@@ -72,6 +84,10 @@ export async function POST(request: Request) {
       .map((r) => r.google_event_id)
       .filter((v): v is string => !!v);
 
+    // For Google-source events, the cal_<event_id> *is* the Google
+    // event id to delete — slip it into the same delete list.
+    if (calEventId) eventIds.push(calEventId);
+
     // 2. Delete from BQ first (cheap, local).
     await bq.query({
       query: `
@@ -82,6 +98,21 @@ export async function POST(request: Request) {
       `,
       params: findParams,
     });
+
+    // 2b. For Google-source events, also drop the matching
+    //     quadrant_signals row so /api/calendar/today stops
+    //     returning it on the next refetch. The classifier's MERGE
+    //     "NOT MATCHED BY SOURCE THEN DELETE" path would eventually
+    //     do this after Fivetran resyncs, but we want immediate UI.
+    if (calEventId) {
+      await bq.query({
+        query: `
+          DELETE FROM ${fqn("quadrant_signals")}
+          WHERE user_id = @uid AND signal_id = @sig
+        `,
+        params: { uid: USER_ID, sig: `cal:${calEventId}` },
+      });
+    }
 
     // 3. Delete from Google Calendar best-effort. We don't fail the
     //    whole call if Google rejects (event may already be gone, or

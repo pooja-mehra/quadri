@@ -19,7 +19,7 @@
 
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Calendar as CalendarIcon, RefreshCw, Loader2 } from "lucide-react";
+import { Calendar as CalendarIcon, RefreshCw, Loader2, Download } from "lucide-react";
 import { ItemDetailModal } from "@/components/item-detail-modal";
 import { cn } from "@/lib/utils";
 
@@ -95,6 +95,10 @@ export function CalendarStrip({
 
   const [openChip, setOpenChip] = useState<StripChip | null>(null);
 
+  // Refetch both feeds whenever anything could have changed: planDate
+  // change, modal close (internal refreshKey), or parent-driven event
+  // (externalRefreshKey). Removing a Google-source event needs the
+  // events feed to redraw, so internal refreshKey has to drive it too.
   useEffect(() => {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
     let cancelled = false;
@@ -114,7 +118,7 @@ export function CalendarStrip({
     return () => {
       cancelled = true;
     };
-  }, [planDate]);
+  }, [planDate, refreshKey, externalRefreshKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -131,30 +135,6 @@ export function CalendarStrip({
     };
   }, [planDate, refreshKey, externalRefreshKey]);
 
-  // Calendar events too — anything that touches calendar (sync,
-  // remove from cal) needs to redraw both feeds.
-  useEffect(() => {
-    if (externalRefreshKey === 0) return;
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    let cancelled = false;
-    fetch(
-      `/api/calendar/today?plan_date=${encodeURIComponent(planDate)}&tz=${encodeURIComponent(tz)}`,
-      { cache: "no-store" },
-    )
-      .then((r) => (r.ok ? r.json() : { events: [] }))
-      .then((data: { events: CalendarEvent[] }) => {
-        if (!cancelled) {
-          setEvents(
-            (data.events ?? []).slice().sort((a, b) => a.start_min - b.start_min),
-          );
-        }
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [planDate, externalRefreshKey]);
-
   // Index calendar-event done state from slots.
   const doneEventIds = new Set<string>();
   for (const s of slots) {
@@ -163,6 +143,10 @@ export function CalendarStrip({
 
   const now = new Date();
   const nowMin = now.getHours() * 60 + now.getMinutes();
+  // Keep chips on the strip for 2 hours after they end so the user has
+  // a chance to mark them done / reflect / capture a note before the
+  // chip falls off the bar. Done chips stay until midnight regardless.
+  const KEEP_AFTER_END_MIN = 120;
 
   // Build the merged chip list. Calendar events first; then scheduled
   // user items (slots with item_text, slot_start_min > 0, no source
@@ -170,9 +154,10 @@ export function CalendarStrip({
   const chips: StripChip[] = [];
 
   for (const e of events) {
-    const ended = e.start_min + e.duration_min <= nowMin;
+    const endedLongAgo =
+      e.start_min + e.duration_min + KEEP_AFTER_END_MIN <= nowMin;
     const isDone = doneEventIds.has(e.id);
-    if (ended && !isDone) continue;
+    if (endedLongAgo && !isDone) continue;
     // Calendar events get promoted into daily_slots with id
     // `cal_<event_id>` (deterministic). Find that slot if it exists
     // so the Remove button can DELETE it; otherwise use the synthetic
@@ -201,8 +186,8 @@ export function CalendarStrip({
     if (s.source_event_id) continue; // already covered as a calendar event above
     if (!s.slot_start_min || s.slot_start_min < SCHED_STRIDE_MIN) continue;
     const dur = s.duration_min ?? 15;
-    const ended = s.slot_start_min + dur <= nowMin;
-    if (ended && !s.done) continue;
+    const endedLongAgo = s.slot_start_min + dur + KEEP_AFTER_END_MIN <= nowMin;
+    if (endedLongAgo && !s.done) continue;
     const refIsAction = isActionUuid(s.item_ref_id);
     chips.push({
       key: `sched-${s.slot_id}`,
@@ -269,22 +254,33 @@ export function CalendarStrip({
         <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-neutral-500">
           <CalendarIcon className="size-3" aria-hidden />
           Today on your calendar
-          {hasScheduledItems ? (
-            <button
-              type="button"
-              onClick={() => void syncToGoogle()}
-              disabled={syncing}
-              title="Push scheduled items to Google Calendar"
-              className="ml-auto inline-flex items-center gap-1 rounded-md border border-neutral-200 bg-white px-1.5 py-0.5 text-[10px] normal-case font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
+          <div className="ml-auto flex items-center gap-1.5">
+            {hasScheduledItems ? (
+              <button
+                type="button"
+                onClick={() => void syncToGoogle()}
+                disabled={syncing}
+                title="Push scheduled items to Google Calendar"
+                className="inline-flex items-center gap-1 rounded-md border border-neutral-200 bg-white px-1.5 py-0.5 text-[10px] normal-case font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
+              >
+                {syncing ? (
+                  <Loader2 className="size-3 animate-spin" aria-hidden />
+                ) : (
+                  <RefreshCw className="size-3" aria-hidden />
+                )}
+                {syncing ? "Syncing…" : "Sync with Google Calendar"}
+              </button>
+            ) : null}
+            <a
+              href="/api/notes/export"
+              download
+              title="Download your notes CSV"
+              className="inline-flex items-center gap-1 rounded-md border border-neutral-200 bg-white px-1.5 py-0.5 text-[10px] normal-case font-medium text-neutral-700 hover:bg-neutral-50"
             >
-              {syncing ? (
-                <Loader2 className="size-3 animate-spin" aria-hidden />
-              ) : (
-                <RefreshCw className="size-3" aria-hidden />
-              )}
-              {syncing ? "Syncing…" : "Sync to Google"}
-            </button>
-          ) : null}
+              <Download className="size-3" aria-hidden />
+              Export notes
+            </a>
+          </div>
         </div>
         <div className="flex flex-wrap gap-1.5">
           {chips.map((c) => {

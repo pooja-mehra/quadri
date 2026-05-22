@@ -106,10 +106,10 @@ export function ChatDock({
       draftingCountRef.current = Math.max(0, draftingCountRef.current - 1);
       if (draftingCountRef.current === 0) {
         setBusyMessage("thinking…");
-        // Don't force-clear busy here — the in-flight chat call
-        // will clear it when its response lands. This just resets
-        // the label so the next setBusy(true) doesn't show stale
-        // "Creating drafts…".
+        // Drafting events are dispatched from the modal with its own
+        // sessionId — there's no dock-owned chat call to clear busy,
+        // so we have to clear it here or the dock stays stuck.
+        setBusy(false);
       }
     }
     window.addEventListener("quadri:drafting-start", onDraftStart);

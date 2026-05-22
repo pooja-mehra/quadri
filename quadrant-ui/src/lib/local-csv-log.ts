@@ -4,7 +4,10 @@
 // no permission prompts, plain file the user opens in Excel/Sheets.
 //
 // File location:
-//   - Default: ~/Documents/quadri-notes.csv
+//   - Default: ~/quadri-notes.csv (home dir — macOS restricts node access
+//     to ~/Documents/ via the Files and Folders privacy permission, which
+//     trips up local dev unless the user grants Full Disk Access. Home is
+//     unrestricted.)
 //   - Overridable via env var QUADRI_NOTES_FILE (absolute path).
 // First write creates the file with a header row. Subsequent writes
 // append one row. Best-effort — failures are swallowed so a missing
@@ -18,7 +21,7 @@ import os from "node:os";
 import { bq, fqn, USER_ID } from "@/lib/bq";
 import { isDemoMode } from "@/lib/demo-mode";
 
-const DEFAULT_FILE = path.join(os.homedir(), "Documents", "quadri-notes.csv");
+const DEFAULT_FILE = path.join(os.homedir(), "quadri-notes.csv");
 const HEADER = "date,title,source,notes\n";
 
 export function notesCsvPath(): string {

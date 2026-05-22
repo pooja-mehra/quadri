@@ -167,11 +167,20 @@ function buildQueue(
   const out: FocusItem[] = [];
   for (const pi of planItems) {
     if (pi.source === "goal") continue;
-    if (!pi.source_ref_id) continue;
+    // The ranker sometimes emits "user"-source items with a null
+    // source_ref_id but a non-empty cited_signal_ids (e.g. "Review
+    // the contractor agreement" cites drive_doc:contractor_v1).
+    // Promote the first cited signal so the item still renders.
+    let effectivePi = pi;
+    if (!pi.source_ref_id) {
+      const fallback = (pi.cited_signal_ids ?? [])[0];
+      if (!fallback) continue;
+      effectivePi = { ...pi, source_ref_id: fallback };
+    }
 
     // Hide if user just marked the underlying signal or any cited
     // signal as done.
-    if (doneRefs.has(pi.source_ref_id)) continue;
+    if (doneRefs.has(effectivePi.source_ref_id!)) continue;
     let citedDone = false;
     for (const sid of pi.cited_signal_ids ?? []) {
       if (doneRefs.has(sid)) {
@@ -186,7 +195,7 @@ function buildQueue(
     // check both the plan item's ref AND any cited signals; the
     // action's owning signal is also added via the signalToAction
     // map below for action-backed items.
-    if (scheduledRefs.has(pi.source_ref_id)) continue;
+    if (scheduledRefs.has(effectivePi.source_ref_id!)) continue;
     let citedScheduled = false;
     for (const sid of pi.cited_signal_ids ?? []) {
       if (scheduledRefs.has(sid)) {
@@ -198,14 +207,17 @@ function buildQueue(
 
     // Normalize: if source_ref_id isn't a known action_id, look it
     // (and the cited signals) up in the signal→action map.
-    let normalized = pi;
-    if (!isKnownAction(pi.source_ref_id)) {
-      const candidates = [...(pi.cited_signal_ids ?? []), pi.source_ref_id];
+    let normalized = effectivePi;
+    if (!isKnownAction(effectivePi.source_ref_id!)) {
+      const candidates = [
+        ...(pi.cited_signal_ids ?? []),
+        effectivePi.source_ref_id!,
+      ];
       for (const sid of candidates) {
         const hit = signalToAction.get(sid);
         if (hit) {
           normalized = {
-            ...pi,
+            ...effectivePi,
             source: hit.source,
             source_ref_id: hit.actionId,
           };

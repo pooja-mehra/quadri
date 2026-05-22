@@ -47,7 +47,12 @@ display_rollup AS (
     quadrant,
     ARRAY_AGG(
       STRUCT(signal_id, title, valence, weight, excerpt, occurred_at, source)
-      ORDER BY occurred_at ASC LIMIT 10
+      -- Order high-weight actionable signals first so the quadrant
+      -- card's default-3 view surfaces real work (Drive docs, emails,
+      -- sheet rows) instead of low-weight calendar fillers ("deep
+      -- work", "self care") that the strip already shows. Tie-break
+      -- by recency so today's items rank above earlier-week ones.
+      ORDER BY weight DESC, occurred_at DESC LIMIT 10
     ) AS top_signals
   FROM display_signals
   WHERE quadrant IN ("health", "education", "career", "relationships")

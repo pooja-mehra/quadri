@@ -74,6 +74,10 @@ type SignalDetail = {
   weight: number | null;
   metadata_json: string | null;
   participants: string[] | null;
+  // Set by /api/signals/[id] if a drafted/approved action references
+  // this signal. Modal auto-pivots to the action view so the user
+  // lands on the draft (e.g. after "I signed it" creates a send-back).
+  linked_action_id?: string | null;
 };
 
 function prettySource(s: string | null | undefined): string {
@@ -290,7 +294,7 @@ export function ItemDetailModal({
     setLoading(true);
     fetch(fetchTarget, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
+      .then(async (data) => {
         if (cancelled || !data) return;
         if (actionId) {
           const a = data as ActionDetail;
@@ -299,10 +303,35 @@ export function ItemDetailModal({
           setBody(a.body ?? "");
           setToRecipient(a.to_recipient ?? "");
           setAttachments(a.attachments ?? []);
-        } else {
-          setSignal(data as SignalDetail);
-          setAttachments([]);
+          return;
         }
+        const sig = data as SignalDetail;
+        // If a drafted/approved action references this signal (e.g.
+        // user clicked "I signed it" earlier and draft_signed_doc_email
+        // created a send-back), pivot to the action view so the user
+        // lands on the editable draft instead of the read-only signal.
+        if (sig.linked_action_id) {
+          try {
+            const ar = await fetch(`/api/actions/${sig.linked_action_id}`, {
+              cache: "no-store",
+            });
+            if (ar.ok) {
+              const a = (await ar.json()) as ActionDetail;
+              if (!cancelled) {
+                setAction(a);
+                setSubject(a.subject ?? "");
+                setBody(a.body ?? "");
+                setToRecipient(a.to_recipient ?? "");
+                setAttachments(a.attachments ?? []);
+              }
+              return;
+            }
+          } catch {
+            // Fall through to render the signal — degraded but not broken.
+          }
+        }
+        setSignal(sig);
+        setAttachments([]);
       })
       .catch(() => {})
       .finally(() => {
@@ -611,29 +640,47 @@ export function ItemDetailModal({
         typeof crypto !== "undefined" && "randomUUID" in crypto
           ? "signed-" + crypto.randomUUID()
           : "signed-" + Date.now();
+      // draft_signed_doc_email is slow (Drive search + LLM draft +
+      // multipart MIME build). Fire and forget so the modal closes
+      // immediately — the chat dock's "Creating drafts…" busy state
+      // covers the wait, and the toast on completion tells the user
+      // when the draft is ready to open from the chip.
       if (typeof window !== "undefined") {
         window.dispatchEvent(new CustomEvent("quadri:drafting-start"));
       }
-      const chatResp = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message:
-            `I just signed: ${signal.title || "the document"}. ` +
-            `Use draft_signed_doc_email with keywords ${JSON.stringify(kws)}.`,
-          sessionId,
-        }),
-      }).catch(() => null);
-      if (typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent("quadri:drafting-end"));
-      }
-      if (chatResp && chatResp.ok) {
-        toast.success("Marked signed — send-back email drafted. Open it to review.");
-      } else {
-        toast.info(
-          "Marked signed. Open Quadri chat and say 'I signed it' to draft the send-back.",
-        );
-      }
+      void (async () => {
+        let ok = false;
+        try {
+          const chatResp = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              message:
+                `I just signed: ${signal.title || "the document"}. ` +
+                `Use draft_signed_doc_email with keywords ${JSON.stringify(kws)}.`,
+              sessionId,
+            }),
+          });
+          ok = chatResp.ok;
+        } catch {
+          ok = false;
+        } finally {
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("quadri:drafting-end"));
+          }
+          if (ok) {
+            toast.success(
+              "Send-back email drafted. Reopen the item to review.",
+            );
+          } else {
+            toast.info(
+              "Marked signed. Open Quadri chat and say 'I signed it' to draft the send-back.",
+            );
+          }
+          onChanged?.();
+        }
+      })();
+      toast.success("Marked signed — drafting send-back in the background…");
       onChanged?.();
       onClose();
     } finally {
@@ -989,6 +1036,24 @@ export function ItemDetailModal({
           <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
             {/* Composer — 2/3 width on md+ */}
             <div className="space-y-3 md:col-span-2">
+              {/* Bounce banner — when the action subject signals a
+                  delivery-failure follow-up ("Fix ... (bounced)" /
+                  "bounce"), surface the bad address visibly above
+                  the To field so the user knows what to change. */}
+              {action && /\b(bounce|bounced|delivery failure)\b/i.test(
+                `${action.subject ?? ""} ${action.body ?? ""}`,
+              ) ? (
+                <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-2 text-[11px] leading-snug text-amber-900">
+                  <span className="font-medium">⚠️ Bounced:</span>
+                  <span>
+                    The previous send to{" "}
+                    <span className="rounded bg-amber-200/70 px-1 font-mono text-[10.5px]">
+                      {action.to_recipient || "(no address)"}
+                    </span>{" "}
+                    bounced. Fix the To address below and re-send.
+                  </span>
+                </div>
+              ) : null}
               <div className="space-y-1">
                 <label className="text-[10px] font-medium uppercase tracking-wider text-foreground/55">
                   To
