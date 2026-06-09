@@ -1,6 +1,6 @@
 # Quadri
 
-> An ADHD-first executive-function copilot. Reads your inbox, calendar,
+> An executive-function copilot. Reads your inbox, calendar,
 > and Drive sheets; surfaces one thing to focus on; drafts the emails
 > you'd rather not write.
 
